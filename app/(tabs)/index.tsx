@@ -1,6 +1,6 @@
 import { FOX_SYSTEM_PROMPT } from '@/constants/foxPrompt';
 import { Image } from 'expo-image';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -13,6 +13,11 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+type FoxAnimation = 'breathe' | 'listen' | 'move';
+
+// 假设每个 GIF 播放一次需要的时间（毫秒），根据实际 GIF 长度调整
+const GIF_DURATION = 2000;
 
 async function requestChatbot(message: string) {
   const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
@@ -54,25 +59,81 @@ async function requestChatbot(message: string) {
 }
 
 export default function HomeScreen() {
+  const initialMessage = "Hey… I'm Lumo. I noticed it feels a little quiet around you today.";
   const [inputMessage, setInputMessage] = useState('');
-  const [foxMessage, setFoxMessage] = useState("Hey… I'm Lumo. I noticed it feels a little quiet around you today.");
+  const [foxMessage, setFoxMessage] = useState(initialMessage);
   const [isSending, setIsSending] = useState(false);
+  const [foxAnimation, setFoxAnimation] = useState<FoxAnimation>('breathe');
+  const [animationKey, setAnimationKey] = useState(0); // 用于强制重新播放 move 动画的 key
+  const moveSequenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevFoxMessageRef = useRef<string>(initialMessage);
+  const isInMoveSequenceRef = useRef(false);
   const insets = useSafeAreaInsets();
+
+  // 监听用户输入，切换到 listen 状态（只在不在 move 序列时）
+  useEffect(() => {
+    if (isInMoveSequenceRef.current) return; // 在 move 序列中，不响应输入变化
+
+    if (inputMessage.trim().length > 0 && !isSending) {
+      setFoxAnimation('listen');
+    } else if (inputMessage.trim().length === 0 && !isSending) {
+      setFoxAnimation('breathe');
+    }
+  }, [inputMessage, isSending]);
+
+  // 监听回复完成，播放 move 两次后回到 breathe
+  useEffect(() => {
+    // 当收到新回复时，播放 move 两次（不依赖 isSending，因为消息更新时可能 isSending 还没变为 false）
+    if (foxMessage && foxMessage !== prevFoxMessageRef.current) {
+      const newMessage = foxMessage;
+      prevFoxMessageRef.current = newMessage;
+
+      // 清除之前的 move 序列定时器
+      if (moveSequenceTimeoutRef.current) {
+        clearTimeout(moveSequenceTimeoutRef.current);
+        moveSequenceTimeoutRef.current = null;
+      }
+
+      // 开始 move 序列
+      isInMoveSequenceRef.current = true;
+      setFoxAnimation('move');
+      setAnimationKey(prev => prev + 1); // 更新 key 确保第一次 move 重新播放
+
+      // 第一次 move 播放完成后，播放第二次
+      moveSequenceTimeoutRef.current = setTimeout(() => {
+        setFoxAnimation('move');
+        setAnimationKey(prev => prev + 1); // 更新 key 强制重新播放第二次 move
+
+        // 第二次 move 播放完成后，回到 breathe
+        moveSequenceTimeoutRef.current = setTimeout(() => {
+          setFoxAnimation('breathe');
+          isInMoveSequenceRef.current = false;
+          setAnimationKey(prev => prev + 1); // 更新 key 确保 breathe 重新播放
+        }, GIF_DURATION);
+      }, GIF_DURATION);
+    }
+
+    return () => {
+      if (moveSequenceTimeoutRef.current) {
+        clearTimeout(moveSequenceTimeoutRef.current);
+      }
+    };
+  }, [foxMessage]);
 
   const handleSend = useCallback(async () => {
     const trimmed = inputMessage.trim();
     if (!trimmed || isSending) return;
 
     setIsSending(true);
+    setInputMessage(''); // 清空输入框
     try {
       const reply = await requestChatbot(trimmed);
-      setFoxMessage(reply);
+      setFoxMessage(reply); // 这会触发 move 序列的 useEffect
     } catch (error) {
       console.error('Failed to reach chatbot', error);
-      setFoxMessage("I'm sorry, I can't respond right now.");
+      setFoxMessage("I'm sorry, I can't respond right now."); // 这也会触发 move 序列
     } finally {
       setIsSending(false);
-      setInputMessage('');
       Keyboard.dismiss();
     }
   }, [inputMessage, isSending]);
@@ -91,9 +152,16 @@ export default function HomeScreen() {
         <View style={styles.gifContainer} pointerEvents="box-none">
           <View style={styles.foxWrapper}>
             <Image
-              source={require('@/assets/images/pics/Fox.png')}
+              source={
+                foxAnimation === 'breathe'
+                  ? require('@/assets/images/pics/FoxBreathe.gif')
+                  : foxAnimation === 'listen'
+                    ? require('@/assets/images/pics/FoxListen.gif')
+                    : require('@/assets/images/pics/FoxMove.gif')
+              }
               style={styles.gifImage}
               contentFit="contain"
+              key={foxAnimation === 'move' ? `move-${animationKey}` : foxAnimation}
             />
             <View style={styles.bubbleWrapper}>
               <View style={styles.bubbleBox}>
@@ -157,12 +225,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   gifImage: {
-    width: '100%',
-    height: '100%',
+    width: '70%',
+    height: '70%',
   },
   bubbleWrapper: {
     position: 'absolute',
-    top: -40,
+    top: -100,
     right: -10,
     alignItems: 'flex-start',
   },
